@@ -32,7 +32,7 @@ if (missingEnvs.length > 0) {
 
 const app = express();
 
-const BACKEND_VERSION = "v1.7.8-1-5m-runtime-capacity-20260627";
+const BACKEND_VERSION = "v1.8.1-hyperscale-backpressure-20260627";
 const PROCESS_STARTED_AT = new Date();
 const REQUEST_SLOW_MS = Math.max(250, Number(process.env.REQUEST_SLOW_MS || 1500));
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = Math.max(5000, Number(process.env.SERVER_KEEP_ALIVE_TIMEOUT_MS || 65000));
@@ -41,6 +41,9 @@ const SERVER_REQUEST_TIMEOUT_MS = Math.max(30000, Number(process.env.SERVER_REQU
 const SHUTDOWN_GRACE_MS = Math.max(5000, Number(process.env.SHUTDOWN_GRACE_MS || 25000));
 const CAPACITY_INITIAL_USERS = Math.max(1, Number(process.env.CAPACITY_INITIAL_USERS || 100000));
 const CAPACITY_TARGET_USERS = Math.max(CAPACITY_INITIAL_USERS, Number(process.env.CAPACITY_TARGET_USERS || 1500000));
+const CAPACITY_3M_MIN_SCANNER_WORKERS = Math.max(1, Math.min(64, Number(process.env.CAPACITY_3M_MIN_SCANNER_WORKERS || 4)));
+const CAPACITY_100X_MIN_SCANNER_WORKERS = Math.max(CAPACITY_3M_MIN_SCANNER_WORKERS, Math.min(256, Number(process.env.CAPACITY_100X_MIN_SCANNER_WORKERS || 64)));
+const CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS = Math.max(CAPACITY_100X_MIN_SCANNER_WORKERS, Math.min(2048, Number(process.env.CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS || 256)));
 const opsCounters = {
   requests_total: 0,
   responses_total: 0,
@@ -103,8 +106,18 @@ const MAIN_WITHDRAW_REFERRALS = Math.max(GROWTH_CHECKPOINT_1499_REFERRALS, Numbe
 const PAYMENT_ORDER_TTL_MINUTES = Math.max(1, Number(process.env.PAYMENT_ORDER_TTL_MINUTES || 5));
 const PAYMENT_LATE_GRACE_MINUTES = Math.max(5, Number(process.env.PAYMENT_LATE_GRACE_MINUTES || 30));
 const PAYMENT_WALLET_COOLDOWN_MINUTES = Math.max(PAYMENT_LATE_GRACE_MINUTES, Number(process.env.PAYMENT_WALLET_COOLDOWN_MINUTES || 30));
-const PAYMENT_SCAN_INTERVAL_MS = Math.max(5000, Number(process.env.PAYMENT_SCAN_INTERVAL_MS || 15000));
-const PAYMENT_SCAN_BATCH_SIZE = Math.max(1, Math.min(250, Number(process.env.PAYMENT_SCAN_BATCH_SIZE || 50)));
+const PAYMENT_SCAN_INTERVAL_MS = Math.max(1000, Number(process.env.PAYMENT_SCAN_INTERVAL_MS || 3000));
+const PAYMENT_SCAN_BATCH_SIZE = Math.max(1, Math.min(5000, Number(process.env.PAYMENT_SCAN_BATCH_SIZE || 500)));
+const PAYMENT_SCAN_CONCURRENCY = Math.max(1, Math.min(128, Number(process.env.PAYMENT_SCAN_CONCURRENCY || 32)));
+const PAYMENT_SCAN_JITTER_MS = Math.max(0, Math.min(60000, Number(process.env.PAYMENT_SCAN_JITTER_MS || 2500)));
+const PAYMENT_SCAN_ORDER_DELAY_MS = Math.max(0, Math.min(5000, Number(process.env.PAYMENT_SCAN_ORDER_DELAY_MS || 10)));
+const PAYMENT_SCAN_MAX_ERRORS_PER_RUN = Math.max(1, Math.min(10000, Number(process.env.PAYMENT_SCAN_MAX_ERRORS_PER_RUN || 500)));
+const PAYMENT_SCANNER_SHARD_COUNT = Math.max(1, Math.min(2048, Number(process.env.PAYMENT_SCANNER_SHARD_COUNT || 1)));
+const PAYMENT_SCANNER_SHARD_INDEX = Math.max(0, Math.min(PAYMENT_SCANNER_SHARD_COUNT - 1, Number(process.env.PAYMENT_SCANNER_SHARD_INDEX || 0)));
+const PAYMENT_SCANNER_STALE_AFTER_MS = Math.max(30000, Number(process.env.PAYMENT_SCANNER_STALE_AFTER_MS || PAYMENT_SCAN_INTERVAL_MS * 8));
+const TONAPI_REQUEST_TIMEOUT_MS = Math.max(1000, Math.min(60000, Number(process.env.TONAPI_REQUEST_TIMEOUT_MS || 12000)));
+const TONAPI_RETRY_COUNT = Math.max(0, Math.min(5, Number(process.env.TONAPI_RETRY_COUNT || 2)));
+const TONAPI_RETRY_BASE_MS = Math.max(50, Math.min(10000, Number(process.env.TONAPI_RETRY_BASE_MS || 250)));
 const WORKER_MODE = String(process.env.WORKER_MODE || "").trim().toLowerCase();
 const SCANNER_WORKER_MODE = WORKER_MODE === "scanner";
 const PAYMENT_SCANNER_ENABLED = SCANNER_WORKER_MODE && process.env.PAYMENT_SCANNER_ENABLED !== "false";
@@ -132,6 +145,12 @@ function assertScannerWorkerEnv() {
   }
   if (!PAYMENT_SCANNER_ENABLED) {
     throw new Error("[scanner] PAYMENT_SCANNER_ENABLED must be true when WORKER_MODE=scanner");
+  }
+  if (!Number.isInteger(PAYMENT_SCANNER_SHARD_COUNT) || PAYMENT_SCANNER_SHARD_COUNT < 1) {
+    throw new Error("[scanner] PAYMENT_SCANNER_SHARD_COUNT must be a positive integer");
+  }
+  if (!Number.isInteger(PAYMENT_SCANNER_SHARD_INDEX) || PAYMENT_SCANNER_SHARD_INDEX < 0 || PAYMENT_SCANNER_SHARD_INDEX >= PAYMENT_SCANNER_SHARD_COUNT) {
+    throw new Error("[scanner] PAYMENT_SCANNER_SHARD_INDEX must be between 0 and PAYMENT_SCANNER_SHARD_COUNT - 1");
   }
 }
 
@@ -327,6 +346,11 @@ function requireFields(body, fields) {
 
 const RATE_LIMIT_BACKEND = String(process.env.RATE_LIMIT_BACKEND || "memory").trim().toLowerCase();
 const REDIS_URL = String(process.env.REDIS_URL || "").trim();
+const OPS_DB_AUDIT_TIMEOUT_MS = Math.max(1000, Math.min(30000, Number(process.env.OPS_DB_AUDIT_TIMEOUT_MS || 8000)));
+const SCALE_AUDIT_COUNT_MODE = ["exact", "planned", "estimated"].includes(String(process.env.SCALE_AUDIT_COUNT_MODE || "").trim().toLowerCase())
+  ? String(process.env.SCALE_AUDIT_COUNT_MODE).trim().toLowerCase()
+  : "planned";
+const REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M = process.env.REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M !== "false";
 const rateBuckets = new Map();
 let redisClientPromise = null;
 let redisRateLimitWarned = false;
@@ -372,6 +396,43 @@ function getRedisClient() {
   });
 
   return redisClientPromise;
+}
+
+async function checkRedisHealth() {
+  if (RATE_LIMIT_BACKEND !== "redis") {
+    return {
+      ok: false,
+      backend: RATE_LIMIT_BACKEND,
+      configured: Boolean(REDIS_URL),
+      message: "RATE_LIMIT_BACKEND is not redis"
+    };
+  }
+  if (!REDIS_URL) {
+    return {
+      ok: false,
+      backend: RATE_LIMIT_BACKEND,
+      configured: false,
+      message: "REDIS_URL is missing"
+    };
+  }
+  try {
+    const client = await withOpsTimeout(getRedisClient(), "redis_connect");
+    const pong = await withOpsTimeout(client.ping(), "redis_ping");
+    return {
+      ok: pong === "PONG",
+      backend: RATE_LIMIT_BACKEND,
+      configured: true,
+      ping: pong,
+      message: pong === "PONG" ? "Redis is connected" : "Redis ping returned unexpected response"
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      backend: RATE_LIMIT_BACKEND,
+      configured: true,
+      error: err.message || String(err)
+    };
+  }
 }
 
 function applyMemoryRateLimit(key, limit, windowMs, now) {
@@ -817,6 +878,46 @@ function getTonAutoPayoutStatusSummary() {
     keys_dir_exists: keysDirExists,
     wallet_files: walletFiles.length,
     rpc_endpoint: TON_RPC_ENDPOINT || "auto:orbs-ton-access"
+  };
+}
+
+async function buildTonSignerReadinessReport() {
+  const signer = getTonAutoPayoutStatusSummary();
+  let rpc = {
+    ok: false,
+    configured: Boolean(TON_RPC_ENDPOINT),
+    endpoint: TON_RPC_ENDPOINT || "auto:orbs-ton-access"
+  };
+
+  if (TON_SIGNER_ENABLED) {
+    try {
+      const client = await withOpsTimeout(getTonSignerClient(), "ton_signer_client");
+      const masterchain = await withOpsTimeout(client.getMasterchainInfo(), "ton_masterchain_info");
+      rpc = {
+        ok: Boolean(masterchain?.last),
+        configured: Boolean(TON_RPC_ENDPOINT),
+        endpoint: TON_RPC_ENDPOINT || "auto:orbs-ton-access",
+        last_seqno: masterchain?.last?.seqno || null
+      };
+    } catch (err) {
+      rpc = {
+        ok: false,
+        configured: Boolean(TON_RPC_ENDPOINT),
+        endpoint: TON_RPC_ENDPOINT || "auto:orbs-ton-access",
+        error: err.message || String(err)
+      };
+    }
+  }
+
+  return {
+    ok: Boolean(TON_AUTO_PAYOUT_ENABLED && TON_SIGNER_ENABLED && signer.keys_dir_exists && signer.wallet_files > 0 && rpc.ok),
+    require_for_1_5m: REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M,
+    auto_payout_enabled: TON_AUTO_PAYOUT_ENABLED,
+    signer_enabled: TON_SIGNER_ENABLED,
+    signer,
+    rpc,
+    payout_amount_ton: Number(ACTIVATION_PAYOUT_TON),
+    gas_reserve_ton: Number(TON_PAYOUT_GAS_RESERVE)
   };
 }
 
@@ -1519,6 +1620,49 @@ function extractTonPaymentTransfers(events) {
   return transfers;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJsonWithTimeout(url, { headers = {}, timeoutMs = TONAPI_REQUEST_TIMEOUT_MS, retries = TONAPI_RETRY_COUNT } = {}) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { headers, signal: controller.signal });
+      const text = await response.text();
+      let payload = {};
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        payload = { raw: text };
+      }
+      if (!response.ok || payload.success === false) {
+        const retryable = response.status === 429 || response.status >= 500;
+        const message = payload.error || payload.message || `HTTP ${response.status}`;
+        if (!retryable || attempt >= retries) {
+          throw new Error(message);
+        }
+        lastError = new Error(message);
+      } else {
+        return payload;
+      }
+    } catch (err) {
+      lastError = err;
+      if (attempt >= retries) throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const delay = TONAPI_RETRY_BASE_MS * Math.pow(2, attempt) + Math.floor(Math.random() * TONAPI_RETRY_BASE_MS);
+    await sleep(delay);
+  }
+
+  throw lastError || new Error("Request failed");
+}
+
 async function fetchTonPaymentTransactions(address, minTimestamp) {
   const all = [];
   let beforeLt = "";
@@ -1532,13 +1676,7 @@ async function fetchTonPaymentTransactions(address, minTimestamp) {
     const headers = { Accept: "application/json" };
     if (TONAPI_KEY) headers.Authorization = `Bearer ${TONAPI_KEY}`;
 
-    const res = await fetch(`${TONAPI_BASE_URL}/v2/accounts/${encodeURIComponent(address)}/events?${params.toString()}`, { headers });
-
-    const text = await res.text();
-    const payload = text ? JSON.parse(text) : {};
-    if (!res.ok || payload.success === false) {
-      throw new Error(payload.error || payload.message || `TON API ${res.status}`);
-    }
+    const payload = await fetchJsonWithTimeout(`${TONAPI_BASE_URL}/v2/accounts/${encodeURIComponent(address)}/events?${params.toString()}`, { headers });
 
     const events = Array.isArray(payload.events) ? payload.events : (Array.isArray(payload) ? payload : []);
     all.push(...events);
@@ -1775,6 +1913,30 @@ const PAYMENT_SCANNER_HEARTBEAT_TABLE = "payment_scanner_heartbeats";
 let scannerHeartbeatWarned = false;
 let scannerClaimRpcWarned = false;
 
+async function upsertPaymentScannerHeartbeat(payload) {
+  const { error } = await supabase
+    .from(PAYMENT_SCANNER_HEARTBEAT_TABLE)
+    .upsert(payload, { onConflict: "worker_id" });
+
+  if (!error) return { error: null };
+
+  const missingColumn = ["42703", "PGRST204"].includes(error.code) ||
+    /column|schema cache/i.test(error.message || "");
+  if (!missingColumn) return { error };
+
+  const compatiblePayload = { ...payload };
+  delete compatiblePayload.shard_count;
+  delete compatiblePayload.shard_index;
+  delete compatiblePayload.scan_concurrency;
+  delete compatiblePayload.scan_jitter_ms;
+  delete compatiblePayload.scan_order_delay_ms;
+  delete compatiblePayload.scan_max_errors_per_run;
+  const retry = await supabase
+    .from(PAYMENT_SCANNER_HEARTBEAT_TABLE)
+    .upsert(compatiblePayload, { onConflict: "worker_id" });
+  return retry;
+}
+
 async function recordPaymentScannerHeartbeat() {
   const now = new Date().toISOString();
   const payload = {
@@ -1791,12 +1953,16 @@ async function recordPaymentScannerHeartbeat() {
     confirmed_total: Number(paymentScannerState.confirmed || 0),
     scan_interval_ms: Number(PAYMENT_SCAN_INTERVAL_MS || 0),
     scan_batch_size: Number(PAYMENT_SCAN_BATCH_SIZE || 0),
+    scan_concurrency: Number(PAYMENT_SCAN_CONCURRENCY || 0),
+    scan_jitter_ms: Number(PAYMENT_SCAN_JITTER_MS || 0),
+    scan_order_delay_ms: Number(PAYMENT_SCAN_ORDER_DELAY_MS || 0),
+    scan_max_errors_per_run: Number(PAYMENT_SCAN_MAX_ERRORS_PER_RUN || 0),
+    shard_count: Number(PAYMENT_SCANNER_SHARD_COUNT || 1),
+    shard_index: Number(PAYMENT_SCANNER_SHARD_INDEX || 0),
     updated_at: now
   };
 
-  const { error } = await supabase
-    .from(PAYMENT_SCANNER_HEARTBEAT_TABLE)
-    .upsert(payload, { onConflict: "worker_id" });
+  const { error } = await upsertPaymentScannerHeartbeat(payload);
 
   if (error) {
     if (!scannerHeartbeatWarned) {
@@ -1837,7 +2003,11 @@ function buildPaymentScannerStatus(heartbeatSnapshot = { available: false, error
   const latest = rows[0] || null;
   const scannerRows = rows.filter((row) => row?.worker_mode === "scanner");
   const latestScanner = scannerRows[0] || null;
-  const staleAfterMs = Math.max(60000, Number(PAYMENT_SCAN_INTERVAL_MS || 15000) * 4);
+  const staleAfterMs = PAYMENT_SCANNER_STALE_AFTER_MS;
+  const activeScannerRows = scannerRows.filter((row) => {
+    const seenMs = row?.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
+    return Boolean(seenMs && Date.now() - seenMs <= staleAfterMs);
+  });
   const latestSeenMs = latestScanner?.last_seen_at ? new Date(latestScanner.last_seen_at).getTime() : 0;
   const heartbeatStale = heartbeatSnapshot.available
     ? (!latestSeenMs || Date.now() - latestSeenMs > staleAfterMs)
@@ -1853,6 +2023,13 @@ function buildPaymentScannerStatus(heartbeatSnapshot = { available: false, error
     heartbeat_stale: heartbeatStale,
     heartbeat_stale_after_ms: staleAfterMs,
     scanner_worker_alive: heartbeatSnapshot.available ? heartbeatStale === false : null,
+    scanner_workers_seen: scannerRows.length,
+    scanner_workers_alive: activeScannerRows.length,
+    expected_min_scanner_workers: CAPACITY_3M_MIN_SCANNER_WORKERS,
+    expected_min_scanner_workers_100x: CAPACITY_100X_MIN_SCANNER_WORKERS,
+    expected_min_scanner_workers_hyperscale: CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS,
+    shard_count: PAYMENT_SCANNER_SHARD_COUNT,
+    shard_index: PAYMENT_SCANNER_SHARD_INDEX,
     latest_heartbeat: latest,
     latest_scanner_heartbeat: latestScanner,
     heartbeats: rows
@@ -1880,7 +2057,7 @@ function getScannerRecommendedChecks(status) {
     "Confirm worker env has WORKER_MODE=scanner and PAYMENT_SCANNER_ENABLED=true.",
     "Confirm worker env has real SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TONAPI_KEY, and TONAPI_BASE_URL.",
     "Confirm worker uses the same Supabase project as the public API.",
-    "Open Render worker logs; v1.7.8 fails fast when required env is missing."
+    "Open Render worker logs; v1.8.1 fails fast when required env or shard config is missing."
   ];
 }
 
@@ -1909,13 +2086,24 @@ function buildPublicPaymentScannerHealth(heartbeatSnapshot = { available: false,
     heartbeat_stale: scannerStatus.heartbeat_stale,
     heartbeat_stale_after_ms: scannerStatus.heartbeat_stale_after_ms,
     scanner_worker_alive: heartbeatAvailable ? scannerAlive : null,
+    scanner_workers_seen: scannerStatus.scanner_workers_seen,
+    scanner_workers_alive: scannerStatus.scanner_workers_alive,
+    expected_min_scanner_workers: scannerStatus.expected_min_scanner_workers,
+    expected_min_scanner_workers_100x: scannerStatus.expected_min_scanner_workers_100x,
+    expected_min_scanner_workers_hyperscale: scannerStatus.expected_min_scanner_workers_hyperscale,
     latest_seen_at: latestScanner?.last_seen_at || null,
     latest_run_at: latestScanner?.last_run_at || null,
     last_error_present: Boolean(latestScanner?.last_error),
     checked_total: Number(latestScanner?.checked_total || 0),
     confirmed_total: Number(latestScanner?.confirmed_total || 0),
     scan_interval_ms: Number(PAYMENT_SCAN_INTERVAL_MS || 0),
-    scan_batch_size: Number(PAYMENT_SCAN_BATCH_SIZE || 0)
+    scan_batch_size: Number(PAYMENT_SCAN_BATCH_SIZE || 0),
+    scan_concurrency: Number(PAYMENT_SCAN_CONCURRENCY || 0),
+    scan_jitter_ms: Number(PAYMENT_SCAN_JITTER_MS || 0),
+    scan_order_delay_ms: Number(PAYMENT_SCAN_ORDER_DELAY_MS || 0),
+    scan_max_errors_per_run: Number(PAYMENT_SCAN_MAX_ERRORS_PER_RUN || 0),
+    tonapi_request_timeout_ms: Number(TONAPI_REQUEST_TIMEOUT_MS || 0),
+    tonapi_retry_count: Number(TONAPI_RETRY_COUNT || 0)
   };
 }
 
@@ -2004,20 +2192,49 @@ function buildDeploymentShape(scanner) {
         service_type: "Background Worker",
         start_command: "npm run start:scanner",
         payment_scanner_enabled: true,
-        redis_required: false
+        redis_required: false,
+        recommended_worker_count_for_3m: CAPACITY_3M_MIN_SCANNER_WORKERS,
+        recommended_worker_count_for_100x: CAPACITY_100X_MIN_SCANNER_WORKERS
       }
     },
     current_service: {
       worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
       payment_scanner_enabled: PAYMENT_SCANNER_ENABLED,
       rate_limit_backend: RATE_LIMIT_BACKEND,
-      redis_configured: Boolean(REDIS_URL)
+      redis_configured: Boolean(REDIS_URL),
+      scanner_shard_count: PAYMENT_SCANNER_SHARD_COUNT,
+      scanner_shard_index: PAYMENT_SCANNER_SHARD_INDEX,
+      scanner_concurrency: PAYMENT_SCAN_CONCURRENCY
     },
     ready_for_real_deposit_test: Boolean(scanner?.status === "ok" && scanner?.scanner_worker_alive === true),
     required_before_100k_plus: {
       scanner_worker_ok: Boolean(scanner?.status === "ok"),
       api_redis_ok: apiMode ? RATE_LIMIT_BACKEND === "redis" && Boolean(REDIS_URL) : true,
       payment_range_ok: paymentRangeOk
+    },
+    required_before_3m: {
+      scanner_workers_alive: Number(scanner?.scanner_workers_alive || 0),
+      min_scanner_workers: CAPACITY_3M_MIN_SCANNER_WORKERS,
+      scanner_worker_pool_ok: Number(scanner?.scanner_workers_alive || 0) >= CAPACITY_3M_MIN_SCANNER_WORKERS,
+      sharded_scanner_sql_required: true
+    },
+    required_before_100x: {
+      scanner_workers_alive: Number(scanner?.scanner_workers_alive || 0),
+      min_scanner_workers: CAPACITY_100X_MIN_SCANNER_WORKERS,
+      scanner_worker_pool_ok: Number(scanner?.scanner_workers_alive || 0) >= CAPACITY_100X_MIN_SCANNER_WORKERS,
+      redis_required: true,
+      database_partitioning_required: true,
+      load_test_required: true
+    },
+    required_before_hyperscale: {
+      scanner_workers_alive: Number(scanner?.scanner_workers_alive || 0),
+      min_scanner_workers: CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS,
+      scanner_worker_pool_ok: Number(scanner?.scanner_workers_alive || 0) >= CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS,
+      redis_required: true,
+      database_partitioning_required: true,
+      regional_worker_split_required: true,
+      tonapi_rate_limit_contract_required: true,
+      load_test_required: true
     }
   };
 }
@@ -2029,14 +2246,24 @@ function buildCapacityReadiness(scanner) {
     Number(PAYMENT_AMOUNT_TON) <= Number(PAYMENT_MAX_RECEIVED_TON);
   const redisOk = apiMode ? RATE_LIMIT_BACKEND === "redis" && Boolean(REDIS_URL) : true;
   const scannerOk = Boolean(scanner?.status === "ok" && scanner?.scanner_worker_alive === true);
+  const scannerWorkersAlive = Number(scanner?.scanner_workers_alive || 0);
+  const scannerPoolOk = scannerWorkersAlive >= CAPACITY_3M_MIN_SCANNER_WORKERS;
+  const scannerPool100xOk = scannerWorkersAlive >= CAPACITY_100X_MIN_SCANNER_WORKERS;
+  const scannerPoolHyperscaleOk = scannerWorkersAlive >= CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS;
   const blockers = [];
   const warnings = [];
 
   if (!paymentRangeOk) blockers.push("TON payment amount range is invalid.");
   if (!scannerOk) blockers.push("Scanner Background Worker is not heartbeating.");
   if (!redisOk) blockers.push("Public API Redis rate limit backend is required before 100K+ traffic.");
+  if (!scannerPoolOk) blockers.push(`At least ${CAPACITY_3M_MIN_SCANNER_WORKERS} scanner workers should be alive before 3M traffic.`);
+  if (!scannerPool100xOk) blockers.push(`At least ${CAPACITY_100X_MIN_SCANNER_WORKERS} scanner workers should be alive before 100x traffic.`);
+  if (!scannerPoolHyperscaleOk) blockers.push(`At least ${CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS} scanner workers should be alive before hyperscale traffic.`);
+  if (REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M && !TON_AUTO_PAYOUT_ENABLED) blockers.push("TON auto payout is required for 1.5M production traffic.");
+  if (REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M && !TON_SIGNER_ENABLED) blockers.push("TON signer is required for 1.5M production traffic.");
   if (!TON_AUTO_PAYOUT_ENABLED) warnings.push("TON auto payout is disabled; deposit scanning can work, but refund payout will require signer/RPC setup.");
-  if (PAYMENT_SCAN_BATCH_SIZE < 50) warnings.push("PAYMENT_SCAN_BATCH_SIZE is below the current 1.5M baseline.");
+  if (PAYMENT_SCAN_BATCH_SIZE < 500) warnings.push("PAYMENT_SCAN_BATCH_SIZE is below the current hyperscale baseline.");
+  if (PAYMENT_SCAN_CONCURRENCY < 32) warnings.push("PAYMENT_SCAN_CONCURRENCY is below the current hyperscale baseline.");
 
   return {
     status: blockers.length ? "blocked" : (warnings.length ? "warning" : "ready"),
@@ -2045,24 +2272,321 @@ function buildCapacityReadiness(scanner) {
     ready_for_real_ton_deposit_test: scannerOk && paymentRangeOk,
     ready_for_100k_public_traffic: scannerOk && paymentRangeOk && redisOk,
     ready_for_1_5m_public_traffic: scannerOk && paymentRangeOk && redisOk && RATE_LIMIT_BACKEND === "redis",
+    ready_for_3m_public_traffic: scannerOk && scannerPoolOk && paymentRangeOk && redisOk && RATE_LIMIT_BACKEND === "redis",
+    ready_for_100x_public_traffic: scannerOk && scannerPool100xOk && paymentRangeOk && redisOk && RATE_LIMIT_BACKEND === "redis",
+    ready_for_hyperscale_public_traffic: scannerOk && scannerPoolHyperscaleOk && paymentRangeOk && redisOk && RATE_LIMIT_BACKEND === "redis",
     checks: {
       scanner_ok: scannerOk,
+      scanner_workers_alive: scannerWorkersAlive,
+      min_scanner_workers_for_3m: CAPACITY_3M_MIN_SCANNER_WORKERS,
+      scanner_pool_ok_for_3m: scannerPoolOk,
+      min_scanner_workers_for_100x: CAPACITY_100X_MIN_SCANNER_WORKERS,
+      scanner_pool_ok_for_100x: scannerPool100xOk,
+      min_scanner_workers_for_hyperscale: CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS,
+      scanner_pool_ok_for_hyperscale: scannerPoolHyperscaleOk,
       payment_range_ok: paymentRangeOk,
       api_redis_ok: redisOk,
       api_scanner_disabled: apiMode ? PAYMENT_SCANNER_ENABLED === false : true,
       ton_auto_payout_enabled: TON_AUTO_PAYOUT_ENABLED,
+      ton_signer_enabled: TON_SIGNER_ENABLED,
+      require_ton_auto_payout_for_1_5m: REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M,
       request_timeout_ms: SERVER_REQUEST_TIMEOUT_MS,
-      keep_alive_timeout_ms: SERVER_KEEP_ALIVE_TIMEOUT_MS
+      keep_alive_timeout_ms: SERVER_KEEP_ALIVE_TIMEOUT_MS,
+      scan_batch_size: PAYMENT_SCAN_BATCH_SIZE,
+      scan_concurrency: PAYMENT_SCAN_CONCURRENCY,
+      scan_jitter_ms: PAYMENT_SCAN_JITTER_MS,
+      scan_order_delay_ms: PAYMENT_SCAN_ORDER_DELAY_MS,
+      tonapi_request_timeout_ms: TONAPI_REQUEST_TIMEOUT_MS,
+      tonapi_retry_count: TONAPI_RETRY_COUNT
     },
     blockers,
     warnings
   };
 }
 
+function withOpsTimeout(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${OPS_DB_AUDIT_TIMEOUT_MS}ms`)), OPS_DB_AUDIT_TIMEOUT_MS);
+    })
+  ]);
+}
+
+async function safeSupabaseCount(table, label, applyQuery = (query) => query) {
+  try {
+    const query = applyQuery(supabase.from(table).select("*", {
+      count: SCALE_AUDIT_COUNT_MODE,
+      head: true
+    }));
+    const { count, error } = await withOpsTimeout(query, label);
+    if (error) {
+      return {
+        ok: false,
+        label,
+        table,
+        count: null,
+        error: error.message || String(error)
+      };
+    }
+    return {
+      ok: true,
+      label,
+      table,
+      count: Number(count || 0),
+      mode: SCALE_AUDIT_COUNT_MODE
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      label,
+      table,
+      count: null,
+      error: err.message || String(err)
+    };
+  }
+}
+
+function compactCountMap(items) {
+  return Object.fromEntries(items.map((item) => [item.label, item]));
+}
+
+async function buildScannerBacklogReport() {
+  const nowIso = new Date().toISOString();
+  const counts = await Promise.all([
+    safeSupabaseCount("payment_orders", "pending_orders", (query) => query
+      .eq("status", "pending")
+      .eq("network", PAYMENT_NETWORK)
+      .eq("token", PAYMENT_TOKEN)
+      .not("wallet_address", "is", null)),
+    safeSupabaseCount("payment_orders", "claimed_pending_orders", (query) => query
+      .eq("status", "pending")
+      .eq("network", PAYMENT_NETWORK)
+      .eq("token", PAYMENT_TOKEN)
+      .not("wallet_address", "is", null)
+      .not("scanner_claimed_until", "is", null)
+      .gt("scanner_claimed_until", nowIso)),
+    safeSupabaseCount("payment_orders", "expired_claims", (query) => query
+      .eq("status", "pending")
+      .eq("network", PAYMENT_NETWORK)
+      .eq("token", PAYMENT_TOKEN)
+      .not("wallet_address", "is", null)
+      .not("scanner_claimed_until", "is", null)
+      .lte("scanner_claimed_until", nowIso)),
+    safeSupabaseCount("payment_orders", "never_checked_pending_orders", (query) => query
+      .eq("status", "pending")
+      .eq("network", PAYMENT_NETWORK)
+      .eq("token", PAYMENT_TOKEN)
+      .not("wallet_address", "is", null)
+      .is("last_checked_at", null))
+  ]);
+  return {
+    ok: counts.every((item) => item.ok),
+    checked_at: nowIso,
+    count_mode: SCALE_AUDIT_COUNT_MODE,
+    timeout_ms: OPS_DB_AUDIT_TIMEOUT_MS,
+    counts: compactCountMap(counts)
+  };
+}
+
+async function buildWalletCapacityReport() {
+  const counts = await Promise.all([
+    safeSupabaseCount("payment_wallets", "total_wallets"),
+    safeSupabaseCount("payment_wallets", "active_wallets", (query) => query.eq("is_active", true)),
+    safeSupabaseCount("payment_wallets", "available_wallets", (query) => query
+      .eq("is_active", true)
+      .is("assigned_to_telegram_id", null)),
+    safeSupabaseCount("payment_wallets", "assigned_wallets", (query) => query
+      .not("assigned_to_telegram_id", "is", null)),
+    safeSupabaseCount("payment_wallets", "wallets_with_orders", (query) => query
+      .not("assigned_order_id", "is", null))
+  ]);
+  const byLabel = compactCountMap(counts);
+  const available = byLabel.available_wallets?.count;
+  const total = byLabel.total_wallets?.count;
+  const availableKnown = typeof available === "number";
+  const totalKnown = typeof total === "number";
+  return {
+    ok: counts.every((item) => item.ok),
+    target_users: CAPACITY_TARGET_USERS,
+    count_mode: SCALE_AUDIT_COUNT_MODE,
+    timeout_ms: OPS_DB_AUDIT_TIMEOUT_MS,
+    counts: byLabel,
+    capacity_gap: availableKnown ? available - CAPACITY_TARGET_USERS : null,
+    available_ratio_to_target: availableKnown && CAPACITY_TARGET_USERS > 0
+      ? Number((available / CAPACITY_TARGET_USERS).toFixed(4))
+      : null,
+    total_ratio_to_target: totalKnown && CAPACITY_TARGET_USERS > 0
+      ? Number((total / CAPACITY_TARGET_USERS).toFixed(4))
+      : null
+  };
+}
+
+function buildScannerShardReport(heartbeatSnapshot = { available: false, error: null, rows: [] }) {
+  const rows = Array.isArray(heartbeatSnapshot.rows) ? heartbeatSnapshot.rows : [];
+  const now = Date.now();
+  const staleAfterMs = PAYMENT_SCANNER_STALE_AFTER_MS;
+  const scannerRows = rows.filter((row) => row?.worker_mode === "scanner");
+  const activeRows = scannerRows.filter((row) => {
+    const seenMs = row?.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
+    return Boolean(seenMs && now - seenMs <= staleAfterMs);
+  });
+  const expectedShardCount = Math.max(
+    1,
+    PAYMENT_SCANNER_SHARD_COUNT,
+    ...scannerRows.map((row) => Number(row.shard_count || 0)).filter((value) => Number.isFinite(value))
+  );
+  const activeByShard = new Map();
+  for (const row of activeRows) {
+    const shard = Number(row.shard_index || 0);
+    if (!activeByShard.has(shard)) activeByShard.set(shard, []);
+    activeByShard.get(shard).push(row.worker_id);
+  }
+  const duplicateShards = [...activeByShard.entries()]
+    .filter(([, workers]) => workers.length > 1)
+    .map(([shard_index, workers]) => ({ shard_index, workers }));
+  const inspectLimit = Math.min(expectedShardCount, 256);
+  const missingShardSample = [];
+  for (let shard = 0; shard < inspectLimit; shard += 1) {
+    if (!activeByShard.has(shard)) missingShardSample.push(shard);
+    if (missingShardSample.length >= 64) break;
+  }
+  return {
+    available: Boolean(heartbeatSnapshot.available),
+    error: heartbeatSnapshot.error || null,
+    expected_shard_count: expectedShardCount,
+    inspected_shards: inspectLimit,
+    scanner_workers_seen: scannerRows.length,
+    scanner_workers_alive: activeRows.length,
+    active_shards: activeByShard.size,
+    missing_shard_sample: missingShardSample,
+    duplicate_shards: duplicateShards,
+    stale_after_ms: staleAfterMs,
+    latest_rows: scannerRows.slice(0, 20).map((row) => ({
+      worker_id: row.worker_id,
+      shard_count: row.shard_count,
+      shard_index: row.shard_index,
+      last_seen_at: row.last_seen_at,
+      last_run_at: row.last_run_at,
+      last_error_present: Boolean(row.last_error),
+      checked_total: Number(row.checked_total || 0),
+      confirmed_total: Number(row.confirmed_total || 0)
+    }))
+  };
+}
+
+function buildScaleContract(scanner, shards, walletCapacity, backlog) {
+  const apiRedisOk = SCANNER_WORKER_MODE ? true : RATE_LIMIT_BACKEND === "redis" && Boolean(REDIS_URL);
+  const paymentRangeOk =
+    Number(PAYMENT_MIN_RECEIVED_TON) <= Number(PAYMENT_AMOUNT_TON) &&
+    Number(PAYMENT_AMOUNT_TON) <= Number(PAYMENT_MAX_RECEIVED_TON);
+  const scannerAlive = Boolean(scanner?.status === "ok" && scanner?.scanner_worker_alive === true);
+  const enoughScannerWorkers = Number(scanner?.scanner_workers_alive || 0) >= CAPACITY_3M_MIN_SCANNER_WORKERS;
+  const walletAuditOk = Boolean(walletCapacity?.ok);
+  const backlogAuditOk = Boolean(backlog?.ok);
+  const availableWallets = walletCapacity?.counts?.available_wallets?.count;
+  const enoughWallets = typeof availableWallets === "number" ? availableWallets >= CAPACITY_TARGET_USERS : false;
+  const checks = [
+    { name: "backend_version", ok: BACKEND_VERSION === "v1.8.1-hyperscale-backpressure-20260627", required: true },
+    { name: "api_redis", ok: apiRedisOk, required: !SCANNER_WORKER_MODE },
+    { name: "api_scanner_disabled", ok: SCANNER_WORKER_MODE ? true : PAYMENT_SCANNER_ENABLED === false, required: !SCANNER_WORKER_MODE },
+    { name: "payment_range", ok: paymentRangeOk, required: true },
+    { name: "scanner_heartbeat", ok: scannerAlive, required: true },
+    { name: "scanner_worker_pool_minimum", ok: enoughScannerWorkers, required: true },
+    { name: "scanner_shards_no_duplicates", ok: Array.isArray(shards?.duplicate_shards) && shards.duplicate_shards.length === 0, required: true },
+    { name: "wallet_capacity_audit", ok: walletAuditOk, required: true },
+    { name: "wallets_available_for_target", ok: enoughWallets, required: true },
+    { name: "scanner_backlog_audit", ok: backlogAuditOk, required: true },
+    { name: "ton_auto_payout", ok: TON_AUTO_PAYOUT_ENABLED, required: REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M },
+    { name: "ton_signer", ok: TON_SIGNER_ENABLED, required: REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M }
+  ];
+  const blockers = checks.filter((item) => item.required && !item.ok).map((item) => item.name);
+  const warnings = checks.filter((item) => !item.required && !item.ok).map((item) => item.name);
+  return {
+    status: blockers.length ? "blocked" : (warnings.length ? "warning" : "ready"),
+    version: BACKEND_VERSION,
+    worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+    target_users: CAPACITY_TARGET_USERS,
+    checks,
+    blockers,
+    warnings
+  };
+}
+
+function buildFinalLaunchGate({ scanner, shards, walletCapacity, backlog, redis, tonSigner, contract }) {
+  const required = [
+    {
+      name: "backend_version",
+      ok: BACKEND_VERSION === "v1.8.1-hyperscale-backpressure-20260627",
+      detail: BACKEND_VERSION
+    },
+    {
+      name: "redis_ready",
+      ok: Boolean(redis?.ok),
+      detail: redis?.message || redis?.error || redis?.backend || "unknown"
+    },
+    {
+      name: "scanner_workers_alive_min_4",
+      ok: Number(scanner?.scanner_workers_alive || 0) >= CAPACITY_3M_MIN_SCANNER_WORKERS,
+      detail: `alive=${Number(scanner?.scanner_workers_alive || 0)}, required=${CAPACITY_3M_MIN_SCANNER_WORKERS}`
+    },
+    {
+      name: "scanner_no_duplicate_shards",
+      ok: Array.isArray(shards?.duplicate_shards) && shards.duplicate_shards.length === 0,
+      detail: `duplicate_shards=${Array.isArray(shards?.duplicate_shards) ? shards.duplicate_shards.length : "unknown"}`
+    },
+    {
+      name: "wallet_capacity_1_5m",
+      ok: Number(walletCapacity?.capacity_gap ?? -1) >= 0,
+      detail: `gap=${walletCapacity?.capacity_gap ?? "unknown"}, available=${walletCapacity?.counts?.available_wallets?.count ?? "unknown"}`
+    },
+    {
+      name: "ton_signer_ready",
+      ok: Boolean(tonSigner?.ok),
+      detail: tonSigner?.rpc?.error || `wallet_files=${tonSigner?.signer?.wallet_files ?? "unknown"}`
+    },
+    {
+      name: "scanner_backlog_audit_ok",
+      ok: Boolean(backlog?.ok),
+      detail: `pending=${backlog?.counts?.pending_orders?.count ?? "unknown"}`
+    },
+    {
+      name: "scale_contract_not_blocked",
+      ok: contract?.status === "ready" || contract?.status === "warning",
+      detail: `status=${contract?.status || "unknown"}`
+    }
+  ];
+
+  const blockers = required.filter((item) => !item.ok);
+  return {
+    status: blockers.length ? "blocked" : "ready",
+    version: BACKEND_VERSION,
+    target_users: CAPACITY_TARGET_USERS,
+    required,
+    blockers,
+    ready_for_1_5m_public_traffic: blockers.length === 0,
+    generated_at: new Date().toISOString()
+  };
+}
+
 async function claimPendingPaymentOrdersForScan(limit) {
   const claimSeconds = Math.max(30, Math.ceil(Number(PAYMENT_SCAN_INTERVAL_MS || 15000) / 1000) * 4);
+  const claimLimit = Math.max(1, Math.min(5000, Number(limit || PAYMENT_SCAN_BATCH_SIZE)));
+  const shardedClaim = await supabase.rpc("claim_pending_payment_orders_sharded", {
+    p_limit: claimLimit,
+    p_worker_id: PAYMENT_SCANNER_WORKER_ID,
+    p_network: PAYMENT_NETWORK,
+    p_token: PAYMENT_TOKEN,
+    p_claim_seconds: claimSeconds,
+    p_shard_count: PAYMENT_SCANNER_SHARD_COUNT,
+    p_shard_index: PAYMENT_SCANNER_SHARD_INDEX
+  });
+
+  if (!shardedClaim.error) return shardedClaim.data || [];
+  if (!["42883", "PGRST202"].includes(shardedClaim.error.code)) throw shardedClaim.error;
+
   const { data: claimedOrders, error: claimError } = await supabase.rpc("claim_pending_payment_orders", {
-    p_limit: Math.max(1, Math.min(500, Number(limit || PAYMENT_SCAN_BATCH_SIZE))),
+    p_limit: claimLimit,
     p_worker_id: PAYMENT_SCANNER_WORKER_ID,
     p_network: PAYMENT_NETWORK,
     p_token: PAYMENT_TOKEN,
@@ -2086,7 +2610,7 @@ async function claimPendingPaymentOrdersForScan(limit) {
     .not("wallet_address", "is", null)
     .order("last_checked_at", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: true })
-    .limit(limit);
+    .limit(claimLimit);
 
   if (error) {
     if (["42P01", "42703"].includes(error.code)) return [];
@@ -2110,15 +2634,25 @@ async function scanPendingPaymentOrders(limit = PAYMENT_SCAN_BATCH_SIZE) {
     });
     const orders = await claimPendingPaymentOrdersForScan(limit);
 
-    for (const order of orders || []) {
-      paymentScannerState.checked += 1;
-      try {
-        const confirmed = await scanPaymentOrder(order);
-        if (confirmed) paymentScannerState.confirmed += 1;
-      } catch (err) {
-        paymentScannerState.lastError = err.message;
+    const queue = Array.isArray(orders) ? orders : [];
+    let cursor = 0;
+    let runErrors = 0;
+    const workerCount = Math.min(PAYMENT_SCAN_CONCURRENCY, queue.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (cursor < queue.length) {
+        if (runErrors >= PAYMENT_SCAN_MAX_ERRORS_PER_RUN) break;
+        const order = queue[cursor++];
+        paymentScannerState.checked += 1;
+        try {
+          if (PAYMENT_SCAN_ORDER_DELAY_MS) await sleep(PAYMENT_SCAN_ORDER_DELAY_MS);
+          const confirmed = await scanPaymentOrder(order);
+          if (confirmed) paymentScannerState.confirmed += 1;
+        } catch (err) {
+          runErrors += 1;
+          paymentScannerState.lastError = err.message;
+        }
       }
-    }
+    }));
 
     return paymentScannerState;
   } catch (err) {
@@ -2589,7 +3123,9 @@ app.get("/scanner/healthz", async (req, res) => {
       checked_total: 0,
       confirmed_total: 0,
       scan_interval_ms: Number(PAYMENT_SCAN_INTERVAL_MS || 0),
-      scan_batch_size: Number(PAYMENT_SCAN_BATCH_SIZE || 0)
+      scan_batch_size: Number(PAYMENT_SCAN_BATCH_SIZE || 0),
+      scan_concurrency: Number(PAYMENT_SCAN_CONCURRENCY || 0),
+      scan_jitter_ms: Number(PAYMENT_SCAN_JITTER_MS || 0)
     });
   }
 });
@@ -2719,6 +3255,286 @@ app.get("/ops/live", async (req, res) => {
       deployment: buildDeploymentShape(scanner),
       capacity,
       warnings
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/scanner-shards", async (req, res) => {
+  try {
+    const scannerHeartbeats = await readPaymentScannerHeartbeats();
+    const scanner = buildPublicPaymentScannerHealth(scannerHeartbeats);
+    const shards = buildScannerShardReport(scannerHeartbeats);
+    res.json({
+      status: scanner.status === "ok" && shards.duplicate_shards.length === 0 ? "ok" : "action_required",
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      scanner,
+      shards
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/scanner-backlog", async (req, res) => {
+  try {
+    const backlog = await buildScannerBacklogReport();
+    res.json({
+      status: backlog.ok ? "ok" : "action_required",
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      backlog
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/wallet-capacity", async (req, res) => {
+  try {
+    const wallet_capacity = await buildWalletCapacityReport();
+    res.json({
+      status: wallet_capacity.ok && Number(wallet_capacity.capacity_gap || 0) >= 0 ? "ok" : "action_required",
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      wallet_capacity
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/redis", async (req, res) => {
+  try {
+    const redis = await checkRedisHealth();
+    res.json({
+      status: redis.ok ? "ok" : "action_required",
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      redis
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/ton-signer", async (req, res) => {
+  try {
+    const ton_signer = await buildTonSignerReadinessReport();
+    res.json({
+      status: ton_signer.ok ? "ok" : "action_required",
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      ton_signer
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/scale-contract", async (req, res) => {
+  try {
+    const scannerHeartbeats = await readPaymentScannerHeartbeats();
+    const scanner = buildPublicPaymentScannerHealth(scannerHeartbeats);
+    const [walletCapacity, backlog, redis, tonSigner] = await Promise.all([
+      buildWalletCapacityReport(),
+      buildScannerBacklogReport(),
+      checkRedisHealth(),
+      buildTonSignerReadinessReport()
+    ]);
+    const shards = buildScannerShardReport(scannerHeartbeats);
+    const contract = buildScaleContract(scanner, shards, walletCapacity, backlog);
+    if (!redis.ok && !contract.blockers.includes("redis_ping")) {
+      contract.blockers.push("redis_ping");
+      contract.checks.push({ name: "redis_ping", ok: false, required: true });
+      contract.status = "blocked";
+    }
+    if (REQUIRE_TON_AUTO_PAYOUT_FOR_1_5M && !tonSigner.ok && !contract.blockers.includes("ton_signer_readiness")) {
+      contract.blockers.push("ton_signer_readiness");
+      contract.checks.push({ name: "ton_signer_readiness", ok: false, required: true });
+      contract.status = "blocked";
+    }
+    res.json({
+      status: contract.status,
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      contract,
+      scanner,
+      shards,
+      redis,
+      ton_signer: tonSigner,
+      wallet_capacity: walletCapacity,
+      backlog
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/final-gate", async (req, res) => {
+  try {
+    const scannerHeartbeats = await readPaymentScannerHeartbeats();
+    const scanner = buildPublicPaymentScannerHealth(scannerHeartbeats);
+    const [walletCapacity, backlog, redis, tonSigner] = await Promise.all([
+      buildWalletCapacityReport(),
+      buildScannerBacklogReport(),
+      checkRedisHealth(),
+      buildTonSignerReadinessReport()
+    ]);
+    const shards = buildScannerShardReport(scannerHeartbeats);
+    const contract = buildScaleContract(scanner, shards, walletCapacity, backlog);
+    const gate = buildFinalLaunchGate({
+      scanner,
+      shards,
+      walletCapacity,
+      backlog,
+      redis,
+      tonSigner,
+      contract
+    });
+    res.json({
+      status: gate.status,
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      gate,
+      scanner,
+      shards,
+      redis,
+      ton_signer: tonSigner,
+      wallet_capacity: walletCapacity,
+      backlog,
+      contract
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/scale-plan", async (req, res) => {
+  try {
+    const scannerHeartbeats = await readPaymentScannerHeartbeats();
+    const scanner = buildPublicPaymentScannerHealth(scannerHeartbeats);
+    const capacity = buildCapacityReadiness(scanner);
+    res.json({
+      version: BACKEND_VERSION,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      scale_target: {
+        initial_users: CAPACITY_INITIAL_USERS,
+        target_users: CAPACITY_TARGET_USERS,
+        label: "hyperscale-control-plane"
+      },
+      required_services: {
+        public_api: {
+          minimum_instances: 2,
+          rate_limit_backend: "redis",
+          redis_required: true
+        },
+        scanner_workers: {
+          minimum_for_3m: CAPACITY_3M_MIN_SCANNER_WORKERS,
+          minimum_for_100x: CAPACITY_100X_MIN_SCANNER_WORKERS,
+          minimum_for_hyperscale: CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS,
+          shard_count_supported: PAYMENT_SCANNER_SHARD_COUNT,
+          batch_size: PAYMENT_SCAN_BATCH_SIZE,
+          concurrency_per_worker: PAYMENT_SCAN_CONCURRENCY,
+          jitter_ms: PAYMENT_SCAN_JITTER_MS,
+          order_delay_ms: PAYMENT_SCAN_ORDER_DELAY_MS,
+          max_errors_per_run: PAYMENT_SCAN_MAX_ERRORS_PER_RUN
+        },
+        tonapi: {
+          request_timeout_ms: TONAPI_REQUEST_TIMEOUT_MS,
+          retry_count: TONAPI_RETRY_COUNT,
+          retry_base_ms: TONAPI_RETRY_BASE_MS,
+          external_rate_limit_contract_required: true
+        },
+        database: {
+          required_sql: "RUN_HYPERSCALE_SQL_2026-06-27.sql",
+          required_rpc: "claim_pending_payment_orders_sharded",
+          recommended_partitioning: [
+            "payment_orders by created_at/status at high volume",
+            "payment_transactions by created_at at high volume",
+            "view_logs by created_at at high volume"
+          ]
+        }
+      },
+      live_checks: {
+        scanner_workers_alive: scanner.scanner_workers_alive,
+        scanner_ok: scanner.status === "ok",
+        redis_ok: !SCANNER_WORKER_MODE ? RATE_LIMIT_BACKEND === "redis" && Boolean(REDIS_URL) : true,
+        capacity_status: capacity.status
+      },
+      capacity
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "not_ready",
+      version: BACKEND_VERSION,
+      error: err.message
+    });
+  }
+});
+
+app.get("/ops/hyperscale", async (req, res) => {
+  try {
+    const scannerHeartbeats = await readPaymentScannerHeartbeats();
+    const scanner = buildPublicPaymentScannerHealth(scannerHeartbeats);
+    const capacity = buildCapacityReadiness(scanner);
+    res.json({
+      status: capacity.ready_for_hyperscale_public_traffic ? "ready" : "blocked",
+      version: BACKEND_VERSION,
+      target_users: CAPACITY_TARGET_USERS,
+      worker_mode: SCANNER_WORKER_MODE ? "scanner" : "api",
+      required: {
+        redis_backend: "redis",
+        scanner_workers_minimum: CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS,
+        scanner_shards_supported: PAYMENT_SCANNER_SHARD_COUNT,
+        sql_file: "RUN_HYPERSCALE_SQL_2026-06-27.sql",
+        render_worker_blueprint: "render.hyperscale-256-workers.yaml"
+      },
+      active: {
+        redis_configured: RATE_LIMIT_BACKEND === "redis" && Boolean(REDIS_URL),
+        scanner_workers_alive: scanner.scanner_workers_alive,
+        scan_interval_ms: PAYMENT_SCAN_INTERVAL_MS,
+        scan_batch_size: PAYMENT_SCAN_BATCH_SIZE,
+        scan_concurrency: PAYMENT_SCAN_CONCURRENCY,
+        scan_jitter_ms: PAYMENT_SCAN_JITTER_MS,
+        tonapi_request_timeout_ms: TONAPI_REQUEST_TIMEOUT_MS,
+        tonapi_retry_count: TONAPI_RETRY_COUNT
+      },
+      capacity
     });
   } catch (err) {
     res.status(503).json({
@@ -4715,7 +5531,7 @@ app.get("/admin/ton-signer/status", requireAdmin, async (req, res) => {
 
 app.post("/admin/payment-scan/run", requireAdmin, async (req, res) => {
   try {
-    const limit = Math.max(1, Math.min(250, Number(req.body?.limit || PAYMENT_SCAN_BATCH_SIZE)));
+    const limit = Math.max(1, Math.min(500, Number(req.body?.limit || PAYMENT_SCAN_BATCH_SIZE)));
     const result = await scanPendingPaymentOrders(limit);
     res.json(result);
   } catch (err) {
@@ -4733,14 +5549,23 @@ function startPaymentScanner() {
   if (!PAYMENT_SCANNER_ENABLED) {
     throw new Error("[scanner] Refusing to start because PAYMENT_SCANNER_ENABLED is not true");
   }
-  setInterval(() => {
-    scanPendingPaymentOrders().catch((err) => {
-      paymentScannerState.lastError = err.message;
-    });
-  }, PAYMENT_SCAN_INTERVAL_MS);
-  scanPendingPaymentOrders().catch((err) => {
-    paymentScannerState.lastError = err.message;
-  });
+  const nextDelay = () => {
+    const jitter = PAYMENT_SCAN_JITTER_MS ? Math.floor(Math.random() * PAYMENT_SCAN_JITTER_MS) : 0;
+    return PAYMENT_SCAN_INTERVAL_MS + jitter;
+  };
+  const schedule = (delayMs = nextDelay()) => {
+    const timer = setTimeout(async () => {
+      try {
+        await scanPendingPaymentOrders();
+      } catch (err) {
+        paymentScannerState.lastError = err.message;
+      } finally {
+        schedule(nextDelay());
+      }
+    }, delayMs);
+    timer.unref?.();
+  };
+  schedule(Math.floor(Math.random() * Math.max(1, PAYMENT_SCAN_JITTER_MS || PAYMENT_SCAN_INTERVAL_MS)));
 }
 
 if (SCANNER_WORKER_MODE) {
