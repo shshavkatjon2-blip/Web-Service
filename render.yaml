@@ -12,13 +12,17 @@ services:
       - key: PAYMENT_SCANNER_ENABLED
         value: false
       - key: PAYMENT_SCAN_INTERVAL_MS
-        value: 5000
+        value: 3000
       - key: PAYMENT_SCAN_BATCH_SIZE
-        value: 250
+        value: 500
       - key: PAYMENT_SCAN_CONCURRENCY
-        value: 16
+        value: 32
       - key: PAYMENT_SCAN_JITTER_MS
         value: 2500
+      - key: PAYMENT_SCAN_ORDER_DELAY_MS
+        value: 10
+      - key: PAYMENT_SCAN_MAX_ERRORS_PER_RUN
+        value: 500
       - key: RATE_LIMIT_BACKEND
         value: redis
       - key: REDIS_URL
@@ -36,13 +40,21 @@ services:
       - key: SHUTDOWN_GRACE_MS
         value: 25000
       - key: CAPACITY_INITIAL_USERS
-        value: 3000000
-      - key: CAPACITY_TARGET_USERS
         value: 300000000
+      - key: CAPACITY_TARGET_USERS
+        value: 30000000000
       - key: CAPACITY_3M_MIN_SCANNER_WORKERS
         value: 4
       - key: CAPACITY_100X_MIN_SCANNER_WORKERS
         value: 64
+      - key: CAPACITY_HYPERSCALE_MIN_SCANNER_WORKERS
+        value: 256
+      - key: TONAPI_REQUEST_TIMEOUT_MS
+        value: 12000
+      - key: TONAPI_RETRY_COUNT
+        value: 2
+      - key: TONAPI_RETRY_BASE_MS
+        value: 250
       - key: TON_AUTO_PAYOUT_ENABLED
         value: false
       - key: TON_SIGNER_ENABLED

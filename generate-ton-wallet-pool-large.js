@@ -7,15 +7,17 @@ function readNumber(name, fallback, min, max) {
   return Math.max(min, Math.min(max, Math.floor(raw)));
 }
 
-const shardCount = readNumber("PAYMENT_SCANNER_SHARD_COUNT", 64, 1, 256);
-const batchSize = readNumber("PAYMENT_SCAN_BATCH_SIZE", 250, 1, 1000);
-const concurrency = readNumber("PAYMENT_SCAN_CONCURRENCY", 16, 1, 64);
-const intervalMs = readNumber("PAYMENT_SCAN_INTERVAL_MS", 5000, 2000, 300000);
+const shardCount = readNumber("PAYMENT_SCANNER_SHARD_COUNT", 256, 1, 2048);
+const batchSize = readNumber("PAYMENT_SCAN_BATCH_SIZE", 500, 1, 5000);
+const concurrency = readNumber("PAYMENT_SCAN_CONCURRENCY", 32, 1, 128);
+const intervalMs = readNumber("PAYMENT_SCAN_INTERVAL_MS", 3000, 1000, 300000);
 const jitterMs = readNumber("PAYMENT_SCAN_JITTER_MS", 2500, 0, 60000);
+const orderDelayMs = readNumber("PAYMENT_SCAN_ORDER_DELAY_MS", 10, 0, 5000);
+const maxErrorsPerRun = readNumber("PAYMENT_SCAN_MAX_ERRORS_PER_RUN", 500, 1, 10000);
 
 function serviceYaml(index) {
   return `  - type: worker
-    name: vidipay-payment-scanner-100x-${index}
+    name: vidipay-payment-scanner-hyperscale-${index}
     runtime: node
     plan: standard
     buildCommand: npm ci --omit=dev
@@ -28,7 +30,7 @@ function serviceYaml(index) {
       - key: PAYMENT_SCANNER_ENABLED
         value: true
       - key: PAYMENT_SCANNER_WORKER_ID
-        value: scanner-100x-${index}
+        value: scanner-hyperscale-${index}
       - key: PAYMENT_SCANNER_SHARD_COUNT
         value: ${shardCount}
       - key: PAYMENT_SCANNER_SHARD_INDEX
@@ -41,6 +43,16 @@ function serviceYaml(index) {
         value: ${concurrency}
       - key: PAYMENT_SCAN_JITTER_MS
         value: ${jitterMs}
+      - key: PAYMENT_SCAN_ORDER_DELAY_MS
+        value: ${orderDelayMs}
+      - key: PAYMENT_SCAN_MAX_ERRORS_PER_RUN
+        value: ${maxErrorsPerRun}
+      - key: TONAPI_REQUEST_TIMEOUT_MS
+        value: 12000
+      - key: TONAPI_RETRY_COUNT
+        value: 2
+      - key: TONAPI_RETRY_BASE_MS
+        value: 250
       - key: RATE_LIMIT_BACKEND
         value: memory
       - key: TONAPI_BASE_URL
@@ -54,12 +66,12 @@ function serviceYaml(index) {
 }
 
 const yaml = [
-  "# VidiPay 100x scanner worker blueprint.",
+  "# VidiPay hyperscale scanner worker blueprint.",
   "# Generated file. Create all services or split them across Render accounts/regions.",
   "services:",
   ...Array.from({ length: shardCount }, (_, index) => serviceYaml(index))
 ].join("\n");
 
-const output = path.resolve(__dirname, "..", "render.100x-64-workers.yaml");
+const output = path.resolve(__dirname, "..", "render.hyperscale-256-workers.yaml");
 fs.writeFileSync(output, `${yaml}\n`);
 console.log(`wrote ${output}`);

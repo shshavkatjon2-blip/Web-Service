@@ -4,7 +4,7 @@ Service: vidipay-backend
 Type: Web Service
 Build command: npm ci --omit=dev
 Start command: npm start
-Expected /healthz version: v1.8.0-100x-scale-controls-20260627
+Expected /healthz version: v1.8.1-hyperscale-backpressure-20260627
 
 Do NOT upload this zip to Background Workers.
-Run RUN_100X_SCALING_SQL_2026-06-27.sql in Supabase before enabling the 64-shard scanner pool.
+Run RUN_HYPERSCALE_SQL_2026-06-27.sql in Supabase before enabling the 256-worker scanner pool.

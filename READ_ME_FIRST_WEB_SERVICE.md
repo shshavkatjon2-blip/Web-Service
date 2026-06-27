@@ -1,4 +1,4 @@
-# Upload this 100x package to Render Web Service only
+# Upload this hyperscale package to Render Web Service only
 
 This package is for the public API service:
 
@@ -11,18 +11,18 @@ This package is for the public API service:
 
 Do not upload this package to Background Workers.
 
-Run this SQL in Supabase before enabling the 100x scanner pool:
+Run this SQL in Supabase before enabling the hyperscale scanner pool:
 
 ```text
-RUN_100X_SCALING_SQL_2026-06-27.sql
-VERIFY_100X_SCALING_SQL_2026-06-27.sql
+RUN_HYPERSCALE_SQL_2026-06-27.sql
+VERIFY_HYPERSCALE_SQL_2026-06-27.sql
 ```
 
 Expected after deploy:
 
 ```text
 https://vidipay-backend.onrender.com/healthz
-version = v1.8.0-100x-scale-controls-20260627
+version = v1.8.1-hyperscale-backpressure-20260627
 ```
 
 Readiness endpoints:
@@ -31,5 +31,6 @@ Readiness endpoints:
 https://vidipay-backend.onrender.com/ops/capacity
 https://vidipay-backend.onrender.com/ops/live
 https://vidipay-backend.onrender.com/ops/scale-plan
+https://vidipay-backend.onrender.com/ops/hyperscale
 https://vidipay-backend.onrender.com/scanner/healthz
 ```
