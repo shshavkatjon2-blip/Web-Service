@@ -1,4 +1,4 @@
-# Upload this 3M package to Render Web Service only
+# Upload this 100x package to Render Web Service only
 
 This package is for the public API service:
 
@@ -9,26 +9,27 @@ This package is for the public API service:
 - Health path: `/healthz`
 - Required scaling env: `RATE_LIMIT_BACKEND=redis` and real `REDIS_URL`
 
-Do not upload this package to the Background Worker.
+Do not upload this package to Background Workers.
 
-Run this SQL in Supabase before the 3M scanner workers:
+Run this SQL in Supabase before enabling the 100x scanner pool:
 
 ```text
-RUN_3M_SCALING_SQL_2026-06-27.sql
-VERIFY_3M_SCALING_SQL_2026-06-27.sql
+RUN_100X_SCALING_SQL_2026-06-27.sql
+VERIFY_100X_SCALING_SQL_2026-06-27.sql
 ```
 
 Expected after deploy:
 
 ```text
 https://vidipay-backend.onrender.com/healthz
-version = v1.7.9-3m-sharded-scanner-20260627
+version = v1.8.0-100x-scale-controls-20260627
 ```
 
-3M readiness endpoints:
+Readiness endpoints:
 
 ```text
 https://vidipay-backend.onrender.com/ops/capacity
 https://vidipay-backend.onrender.com/ops/live
+https://vidipay-backend.onrender.com/ops/scale-plan
 https://vidipay-backend.onrender.com/scanner/healthz
 ```

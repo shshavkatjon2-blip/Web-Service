@@ -1,5 +1,5 @@
 const DEFAULT_BASE_URL = "https://vidipay-backend.onrender.com";
-const EXPECTED_VERSION = "v1.7.9-3m-sharded-scanner-20260627";
+const EXPECTED_VERSION = "v1.8.0-100x-scale-controls-20260627";
 const DEFAULT_TIMEOUT_MS = 15000;
 
 function readEnv(name, fallback = "") {
@@ -146,7 +146,7 @@ async function main() {
   }
 
   console.log("");
-  console.log("LIVE 3M CHECK OK");
+  console.log("LIVE 100X CHECK OK");
 }
 
 main().catch((error) => {
